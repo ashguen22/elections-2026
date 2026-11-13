@@ -1,7 +1,147 @@
 ---
-title: "Election 2026"
+title: "2026 North Carolina Election Results"
+execute:
+  echo: false
+  message: false
+  warning: false
 ---
 
-This is a Quarto website.
+```{r}
+library(tidyverse)
+library(sf)
+library(tigris)
+library(leaflet)
+library(scales)
 
-To learn more about Quarto websites visit <https://quarto.org/docs/websites>.
+# Cache Census shapefiles locally so re-rendering is fast
+options(tigris_use_cache = TRUE)
+
+nc_2026 <- read_tsv("data/results_pct_20261103.txt")
+
+# Load continental U.S. state outlines from the built-in maps package
+us_states <- st_as_sf(maps::map("state", fill = TRUE, plot = FALSE)) |>
+  st_transform(4326)
+```
+
+## U.S. Senate Results by County
+
+```{r}
+# Summarize U.S. Senate vote totals and margin by county
+senate_county <- nc_2026 |>
+  filter(`Contest Name` == "US SENATE") |>
+  summarize(
+    dem_votes = sum(`Total Votes`[`Choice Party` == "DEM"], na.rm = TRUE),
+    rep_votes = sum(`Total Votes`[`Choice Party` == "REP"], na.rm = TRUE),
+    total_votes = sum(`Total Votes`, na.rm = TRUE),
+    .by = County
+  ) |>
+  mutate(dem_margin = (dem_votes - rep_votes) / total_votes)
+
+# Join county shapes and transform to WGS84 (EPSG:4326) for leaflet
+nc_counties <- counties(state = "NC", cb = TRUE, progress_bar = FALSE) |>
+  st_transform(4326) |>
+  mutate(County = str_to_upper(NAME)) |>
+  left_join(senate_county, by = "County") |>
+  mutate(
+    tooltip = paste0(
+      "<strong>", NAME, " County</strong><br/>",
+      "Roy Cooper (DEM): ", comma(dem_votes), "<br/>",
+      "Michael Whatley (REP): ", comma(rep_votes), "<br/>",
+      "Margin: ", ifelse(dem_margin >= 0, "DEM +", "REP +"),
+      percent(abs(dem_margin), accuracy = 0.1)
+    )
+  )
+
+# Center the red-white-blue color scale symmetrically at 0
+senate_lim <- max(abs(nc_counties$dem_margin), na.rm = TRUE)
+senate_pal <- colorNumeric(
+  palette = c("#b2182b", "#f7f7f7", "#2166ac"),
+  domain = c(-senate_lim, senate_lim)
+)
+
+leaflet(nc_counties) |>
+  addProviderTiles(providers$Esri.WorldStreetMap) |>
+  addPolygons(
+    data = us_states,
+    fillColor = "transparent",
+    color = "#666666",
+    weight = 1
+  ) |>
+  addPolygons(
+    fillColor = ~senate_pal(dem_margin),
+    fillOpacity = 0.75,
+    color = "white",
+    weight = 1,
+    highlightOptions = highlightOptions(weight = 2, color = "#333333", bringToFront = TRUE),
+    label = map(nc_counties$tooltip, htmltools::HTML)
+  ) |>
+  addLegend(
+    position = "bottomright",
+    pal = senate_pal,
+    values = c(-senate_lim, senate_lim),
+    title = "Dem - Rep Margin",
+    labFormat = labelFormat(suffix = "%", transform = \(x) round(x * 100))
+  )
+```
+
+## U.S. House of Representatives Results by District
+
+```{r}
+# Summarize U.S. House votes and candidate names for each of the 14 districts
+house_districts <- nc_2026 |>
+  filter(str_starts(`Contest Name`, "US HOUSE OF REPRESENTATIVES")) |>
+  mutate(district = str_extract(`Contest Name`, "\\d+$")) |>
+  summarize(
+    dem_cand = first(Choice[`Choice Party` == "DEM"]),
+    rep_cand = first(Choice[`Choice Party` == "REP"]),
+    dem_votes = sum(`Total Votes`[`Choice Party` == "DEM"], na.rm = TRUE),
+    rep_votes = sum(`Total Votes`[`Choice Party` == "REP"], na.rm = TRUE),
+    total_votes = sum(`Total Votes`, na.rm = TRUE),
+    .by = district
+  ) |>
+  mutate(dem_margin = (dem_votes - rep_votes) / total_votes)
+
+# Join congressional district boundaries and transform to WGS84 for leaflet
+nc_districts <- congressional_districts(state = "NC", cb = TRUE, progress_bar = FALSE) |>
+  st_transform(4326) |>
+  left_join(house_districts, by = c("CD119FP" = "district")) |>
+  mutate(
+    tooltip = paste0(
+      "<strong>District ", as.integer(CD119FP), "</strong><br/>",
+      dem_cand, " (DEM): ", comma(dem_votes), "<br/>",
+      rep_cand, " (REP): ", comma(rep_votes), "<br/>",
+      "Margin: ", ifelse(dem_margin >= 0, "DEM +", "REP +"),
+      percent(abs(dem_margin), accuracy = 0.1)
+    )
+  )
+
+house_lim <- max(abs(nc_districts$dem_margin), na.rm = TRUE)
+house_pal <- colorNumeric(
+  palette = c("#b2182b", "#f7f7f7", "#2166ac"),
+  domain = c(-house_lim, house_lim)
+)
+
+leaflet(nc_districts) |>
+  addProviderTiles(providers$Esri.WorldStreetMap) |>
+  addPolygons(
+    data = us_states,
+    fillColor = "transparent",
+    color = "#666666",
+    weight = 1
+  ) |>
+  addPolygons(
+    fillColor = ~house_pal(dem_margin),
+    fillOpacity = 0.75,
+    color = "white",
+    weight = 1.5,
+    highlightOptions = highlightOptions(weight = 3, color = "#333333", bringToFront = TRUE),
+    label = map(nc_districts$tooltip, htmltools::HTML)
+  ) |>
+  addLegend(
+    position = "bottomright",
+    pal = house_pal,
+    values = c(-house_lim, house_lim),
+    title = "Dem - Rep Margin",
+    labFormat = labelFormat(suffix = "%", transform = \(x) round(x * 100))
+  )
+```
